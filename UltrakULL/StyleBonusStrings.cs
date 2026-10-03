@@ -205,6 +205,8 @@ namespace UltrakULL
 			string text = Regex.Replace(inputBonus, "<[^>]*>", "");
 			switch (text)
 			{
+			case "MAURICED":
+				return LanguageManager.CurrentLanguage.style.style_mauriced;
 			case "CONDUCTOR":
 				return "<color=#00FFFF>" + LanguageManager.CurrentLanguage.style.style_conductor + "</color>";
 			case "CRUSHED":
