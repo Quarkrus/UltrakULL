@@ -281,11 +281,6 @@ namespace UltrakULL
 				initialText = initialText.Trim().Replace("\n", "").Replace("\r", "").Replace("&THE", " & THE").Replace("  ", " ");
 				initialText1 = initialText1.Trim().Replace("\n", "").Replace("\r", "");
 				
-				// Log the initial text content for debugging purposes
-				Logging.Info($"Placard: {placard.name}");
-				Logging.Info($"  Initial Text: '{initialText}'");
-				Logging.Info($"  Initial Text (1): '{initialText1}'");
-				
 				// Apply translations based on initial text content
 				if (initialText.Contains("KING GIZZARD"))
 				{

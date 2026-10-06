@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
@@ -12,6 +13,50 @@ namespace UltrakULL.Harmony_Patches
     public static class TextToTMPConverter
     {
         private static readonly Dictionary<int, TextMeshProUGUI> textToTMP = new Dictionary<int, TextMeshProUGUI>();
+        private static readonly Dictionary<int, Text> tmpToSourceText = new Dictionary<int, Text>();
+        private static readonly string[] universeLibPatterns =
+        {
+            "UniverseLibCanvas",
+            "unityexplorer",
+            "com.sinai",
+            "UniverseLib",
+            "ExplorerCanvas",
+            "InspectorCanvas",
+            "MouseInspectDropdown",
+            "Dropdown List",
+            "Viewport",
+            "Inspector",
+            "PanelHolder"
+        };
+        // The legacy intermission shadow uses an opaque black Text.  Cap it to
+        // the same softer opacity used by the generated TMP shadows.
+        private const float IntermissionShadowAlpha = 0.45f;
+        private static readonly Vector2 IntermissionShadowOffset = new Vector2(2f, -2.75f);
+
+        // Public API for reverse lookup: TMP -> original Text
+        public static Text GetSourceText(TextMeshProUGUI tmp)
+        {
+            if (tmp == null)
+                return null;
+
+            int tmpId = tmp.GetInstanceID();
+            if (tmpToSourceText.TryGetValue(tmpId, out Text sourceText) && sourceText != null)
+                return sourceText;
+
+            tmpToSourceText.Remove(tmpId);
+            return null;
+        }
+
+        // Better reverse lookup using TMP name pattern
+        public static bool IsConvertedFromHealthBar(TextMeshProUGUI tmp)
+        {
+            Text sourceText = GetSourceText(tmp);
+            if (sourceText == null)
+                return false;
+
+            HealthBar healthBar = sourceText.transform.GetComponentInParent<HealthBar>();
+            return healthBar != null && healthBar.hpText == sourceText;
+        }
 
         [HarmonyPatch(typeof(Text), "OnEnable")]
         public static class TextOnEnablePatch
@@ -55,6 +100,7 @@ namespace UltrakULL.Harmony_Patches
                 }
 
                 SetTMPActiveState(__instance, false);
+                SyncTextShadowTwin(__instance, GetTMPForSource(__instance));
             }
         }
 
@@ -65,11 +111,7 @@ namespace UltrakULL.Harmony_Patches
                 return;
             }
 
-            if (IsIntermissionShadowParent(source))
-            {
-                source.canvasRenderer.SetAlpha(0f);
-                return;
-            }
+            bool isIntermissionShadowSource = IsIntermissionShadowSource(source);
 
             // Skip conversion for UniverseLibCanvas texts (UnityExplorer UI)
             if (IsUniverseLibCanvas(source))
@@ -79,15 +121,19 @@ namespace UltrakULL.Harmony_Patches
             }
 
             TextMeshProUGUI tmp = GetTMPForSource(source);
+            if (tmp != null)
+            {
+                RefreshExistingConvertedText(source, tmp, isIntermissionShadowSource);
+                return;
+            }
+
+            tmp = CreateTMPSibling(source);
             if (tmp == null)
             {
-                tmp = CreateTMPSibling(source);
-                if (tmp == null)
-                {
-                    return;
-                }
-                textToTMP[source.GetInstanceID()] = tmp;
+                return;
             }
+            textToTMP[source.GetInstanceID()] = tmp;
+            tmpToSourceText[tmp.GetInstanceID()] = source;
 
 
             if (IsFishingResultText(source))
@@ -99,41 +145,36 @@ namespace UltrakULL.Harmony_Patches
                 CopyTextProperties(source, tmp);
             }
 
-            SyncEffects(source, tmp);
+            SyncEffects(source, tmp, isIntermissionShadowSource || IsIntermissionShadowChild(source));
 
             if (Core.TMPFontReady)
             {
-                // Determine original font from Text component
                 string originalFontName = source.font?.name;
-                bool isMuseumFont = (originalFontName == "GFS Garaldus") || (originalFontName?.Contains("Garaldus") == true) ||
-                                    (originalFontName?.Contains("EBGaramond") == true) || (originalFontName?.Contains("Garamond") == true);
 
-                // Build object path for logging
-                string objectPath = source.gameObject.name;
-                if (source.transform.parent != null)
-                {
-                    objectPath = source.transform.parent.name + "/" + objectPath;
-                    if (source.transform.parent.parent != null)
-                    {
-                        objectPath = source.transform.parent.parent.name + "/" + objectPath;
-                    }
-                }
+                bool isHealthBarText = source.GetComponentInParent<HealthBar>() != null;
+                bool isSpeedometerText = source.GetComponentInParent<Speedometer>() != null;
 
                 bool isInterChild = IsIntermissionShadowChild(source);
-                Logging.Message($"[TMPCONV] Convert: {objectPath}, origFont='{originalFontName}', scene='{GetCurrentSceneName()}', isInterChild={isInterChild}");
+                bool forceUnderlay = TMPShadowPolicy.RequiresForcedShadow(source.transform);
 
                 TextMeshProFontSwap.SwapTMPFont(
                     ref tmp,
                     isConvertedFromText: true,
-                    originalFontName: originalFontName
+                    originalFontName: originalFontName,
+                    forceUnderlay: forceUnderlay,
+                    skipIntermissionUnderlay: isIntermissionShadowSource || isInterChild
                 );
 
-                if (isInterChild)
+                // Ensure health and speedometer texts have shadow twins
+                if (isHealthBarText || isSpeedometerText)
                 {
-                    Logging.Message($"[TMPCONV]   -> is IntermissionShadowChild, adding Shadow component");
-                    AddIntermissionShadow(tmp);
+                    bool altHud = TMPShadowPolicy.IsAltHud(tmp);
+                    TMPShadowTwin.EnsureShadow(tmp, altHud ? new Vector2(1.25f, -1.25f) : new Vector2(3f, -3f));
+
                 }
             }
+
+            ApplyIntermissionShadowSourceStyle(source, tmp);
 
             source.canvasRenderer.SetAlpha(0f);
             SetTMPActiveState(source, source.isActiveAndEnabled);
@@ -143,7 +184,55 @@ namespace UltrakULL.Harmony_Patches
                 ApplyFishingTMP(source, tmp);
             }
 
-            Logging.Message($"[TMPCONV] Done: {source.gameObject.name}");
+            bool forceShadow = TMPShadowPolicy.RequiresForcedShadow(source.transform);
+            bool convertedFromHealthText = source.GetComponentInParent<HealthBar>() != null;
+            bool convertedFromSpeedometerText = source.GetComponentInParent<Speedometer>() != null;
+            if (forceShadow)
+                TextMeshProFontSwap.HudControllerPatch.TrackForcedShadowText(tmp);
+
+            if (forceShadow && !Core.TMPFontReady)
+                TMPOverlayShadowFallback.Set(tmp, true, new Vector2(1.5f, -1.5f));
+
+            if (convertedFromHealthText || convertedFromSpeedometerText || forceShadow)
+            {
+                var hud = HudController.Instance;
+                if (hud != null)
+                {
+                    TextMeshProFontSwap.HudControllerPatch.ApplyOverlayZTest(
+                        tmp,
+                        TextMeshProFontSwap.HudControllerPatch.isOverlaid,
+                        hud.overlayTextMaterial,
+                        hud.normalTextMaterial,
+                        forceManagedShadow: forceShadow || convertedFromHealthText || convertedFromSpeedometerText
+                    );
+                }
+                else if (!Core.TMPFontReady)
+                {
+                    TMPOverlayShadowFallback.Set(tmp, true, new Vector2(1.5f, -1.5f));
+                }
+            }
+
+            SyncTextShadowTwin(source, tmp);
+        }
+
+        private static void RefreshExistingConvertedText(
+            Text source,
+            TextMeshProUGUI converted,
+            bool isIntermissionShadowSource)
+        {
+            if (source == null || converted == null)
+                return;
+
+            CopyRectTransform(source.rectTransform, converted.rectTransform);
+            CopyTextProperties(source, converted);
+            SyncEffects(source, converted, isIntermissionShadowSource || IsIntermissionShadowChild(source));
+            ApplyIntermissionShadowSourceStyle(source, converted);
+            source.canvasRenderer.SetAlpha(0f);
+
+            if (converted.gameObject.activeSelf != source.isActiveAndEnabled)
+                converted.gameObject.SetActive(source.isActiveAndEnabled);
+
+            SyncTextShadowTwin(source, converted);
         }
 
         private static bool IsFishingResultText(Text source)
@@ -182,15 +271,85 @@ namespace UltrakULL.Harmony_Patches
             if (IsFishingResultText(source))
             {
                 ApplyFishingTMP(source, tmp);
+                SyncTextShadowTwin(source, tmp);
                 return;
             }
 
             CopyRectTransform(source.rectTransform, tmp.rectTransform);
             CopyTextProperties(source, tmp);
+            ApplyIntermissionShadowSourceStyle(source, tmp);
+            SyncTextShadowTwin(source, tmp);
             tmp.ForceMeshUpdate();
 
             if (tmp.rectTransform != null)
                 LayoutRebuilder.MarkLayoutForRebuild(tmp.rectTransform);
+        }
+
+        private static void SyncTextShadowTwin(Text source, TextMeshProUGUI converted)
+        {
+            if (source == null || converted == null || source.transform.parent == null)
+                return;
+
+            if (SyncIntermissionShadowSource(source))
+                return;
+
+            bool sourceIsShadow = IsShadowTextName(source.gameObject.name);
+            Text pairedSource = null;
+            Transform parent = source.transform.parent;
+            Text onlyOppositeRoleCandidate = null;
+            int oppositeRoleCandidateCount = 0;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                Transform sibling = parent.GetChild(i);
+                if (sibling == source.transform || IsShadowTextName(sibling.name) == sourceIsShadow)
+                    continue;
+
+                Text candidate = sibling.GetComponent<Text>();
+                if (candidate == null)
+                    continue;
+
+                oppositeRoleCandidateCount++;
+                onlyOppositeRoleCandidate = candidate;
+                if (candidate.text == source.text)
+                {
+                    pairedSource = candidate;
+                    break;
+                }
+            }
+
+            if (pairedSource == null && oppositeRoleCandidateCount == 1)
+                pairedSource = onlyOppositeRoleCandidate;
+
+            if (pairedSource == null)
+                return;
+
+            Text mainSource = sourceIsShadow ? pairedSource : source;
+            Text shadowSource = sourceIsShadow ? source : pairedSource;
+            TextMeshProUGUI mainTMP = GetTMPForSource(mainSource);
+            TextMeshProUGUI shadowTMP = GetTMPForSource(shadowSource);
+            if (mainTMP == null || shadowTMP == null)
+                return;
+
+            shadowTMP.text = mainSource.text;
+            shadowTMP.color = TMPShadowTwin.NormalizeGeneratedShadowColor(shadowSource.color);
+
+            if (mainTMP.transform.parent == shadowTMP.transform.parent)
+                shadowTMP.transform.SetSiblingIndex(mainTMP.transform.GetSiblingIndex());
+
+            bool shouldShowShadow = mainSource.isActiveAndEnabled &&
+                                    shadowSource.isActiveAndEnabled &&
+                                    TMPShadowTwin.IsSourceVisible(mainTMP);
+            if (shadowTMP.gameObject.activeSelf != shouldShowShadow)
+                shadowTMP.gameObject.SetActive(shouldShowShadow);
+
+                Logging.Debug($"[TMPCONV] Paired '{mainSource.name}' with shadow text '{shadowSource.name}'");
+        }
+
+        private static bool IsShadowTextName(string name)
+        {
+                return !string.IsNullOrEmpty(name) &&
+                       (name.IndexOf("shadow", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("тень", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
         private static void SetTMPActiveState(Text source, bool active)
@@ -229,7 +388,13 @@ namespace UltrakULL.Harmony_Patches
             return null;
         }
 
-        private static bool IsIntermissionShadowParent(Text source)
+        // Public API for external access to converted TMP
+        public static TextMeshProUGUI GetConvertedTMP(Text source)
+        {
+            return GetTMPForSource(source);
+        }
+
+        public static bool IsIntermissionShadowSource(Text source)
         {
             if (source == null || source.name != "Text" || source.transform.parent == null)
             {
@@ -249,6 +414,133 @@ namespace UltrakULL.Harmony_Patches
                 && source.transform.parent.parent.parent.name == "PowerUpVignette"
                 && source.transform.parent.parent.parent.parent != null
                 && source.transform.parent.parent.parent.parent.name == "Canvas";
+        }
+
+        private static void ApplyIntermissionShadowSourceStyle(Text source, TextMeshProUGUI converted)
+        {
+            if (converted == null ||
+                !TryGetIntermissionTextPair(source, out _, out Text shadowSource) ||
+                shadowSource != source)
+                return;
+
+            converted.text = StripColorTags(converted.text);
+            converted.color = GetIntermissionShadowColor(shadowSource.color);
+            if (converted.transform.parent == source.transform.parent)
+                converted.transform.SetSiblingIndex(source.transform.GetSiblingIndex());
+        }
+
+        private static bool SyncIntermissionShadowSource(Text source)
+        {
+            if (!TryGetIntermissionTextPair(source, out Text mainSource, out Text shadowSource))
+                return false;
+
+            TextMeshProUGUI mainTMP = GetTMPForSource(mainSource);
+            TextMeshProUGUI shadowTMP = GetTMPForSource(shadowSource);
+            if (mainTMP == null || shadowTMP == null)
+                return false;
+
+            SyncIntermissionShadowLayout(mainTMP, shadowTMP);
+            shadowTMP.text = StripColorTags(mainTMP.text);
+            shadowTMP.color = GetIntermissionShadowColor(shadowSource.color);
+
+            bool shouldShowShadow = mainTMP != null &&
+                                    mainSource.isActiveAndEnabled &&
+                                    shadowSource.isActiveAndEnabled &&
+                                    TMPShadowTwin.IsSourceVisible(mainTMP);
+            if (shadowTMP.gameObject.activeSelf != shouldShowShadow)
+                shadowTMP.gameObject.SetActive(shouldShowShadow);
+
+            return true;
+        }
+
+        private static void SyncIntermissionShadowLayout(
+            TextMeshProUGUI mainTMP,
+            TextMeshProUGUI shadowTMP)
+        {
+            if (mainTMP == null || shadowTMP == null)
+                return;
+
+            Transform mainParent = mainTMP.transform.parent;
+            if (mainParent == null)
+                return;
+
+            if (shadowTMP.transform.parent != mainParent)
+                shadowTMP.transform.SetParent(mainParent, false);
+
+            CopyRectTransform(mainTMP.rectTransform, shadowTMP.rectTransform);
+            shadowTMP.rectTransform.anchoredPosition += IntermissionShadowOffset;
+            shadowTMP.transform.SetSiblingIndex(mainTMP.transform.GetSiblingIndex());
+
+            shadowTMP.font = mainTMP.font;
+            shadowTMP.fontSharedMaterial = mainTMP.fontSharedMaterial;
+            shadowTMP.fontSize = mainTMP.fontSize;
+            shadowTMP.fontSizeMin = mainTMP.fontSizeMin;
+            shadowTMP.fontSizeMax = mainTMP.fontSizeMax;
+            shadowTMP.enableAutoSizing = mainTMP.enableAutoSizing;
+            shadowTMP.alignment = mainTMP.alignment;
+            shadowTMP.characterSpacing = mainTMP.characterSpacing;
+            shadowTMP.wordSpacing = mainTMP.wordSpacing;
+            shadowTMP.lineSpacing = mainTMP.lineSpacing;
+            shadowTMP.lineSpacingAdjustment = mainTMP.lineSpacingAdjustment;
+            shadowTMP.enableWordWrapping = mainTMP.enableWordWrapping;
+            shadowTMP.overflowMode = mainTMP.overflowMode;
+            shadowTMP.fontStyle = mainTMP.fontStyle;
+            shadowTMP.richText = mainTMP.richText;
+            shadowTMP.raycastTarget = false;
+            shadowTMP.maskable = mainTMP.maskable;
+        }
+
+        private static bool TryGetIntermissionTextPair(
+            Text source,
+            out Text mainSource,
+            out Text shadowSource)
+        {
+            mainSource = null;
+            shadowSource = null;
+
+            if (IsIntermissionShadowSource(source))
+            {
+                shadowSource = source;
+                foreach (Transform child in source.transform)
+                {
+                    Text candidate = child.GetComponent<Text>();
+                    if (candidate != null && IsIntermissionShadowChild(candidate))
+                    {
+                        mainSource = candidate;
+                        return true;
+                    }
+                }
+            }
+            else if (IsIntermissionShadowChild(source))
+            {
+                Text candidate = source.transform.parent.GetComponent<Text>();
+                if (IsIntermissionShadowSource(candidate))
+                {
+                    mainSource = source;
+                    shadowSource = candidate;
+                    return true;
+                }
+            }
+
+            mainSource = null;
+            shadowSource = null;
+            return false;
+        }
+
+        private static Color GetIntermissionShadowColor(Color sourceColor)
+        {
+            return new Color(
+                0f,
+                0f,
+                0f,
+                Mathf.Min(Mathf.Clamp01(sourceColor.a), IntermissionShadowAlpha));
+        }
+
+        private static string StripColorTags(string text)
+        {
+            return string.IsNullOrEmpty(text)
+                ? text
+                : Regex.Replace(text, @"</?color(?:\s*=[^>]*)?>", string.Empty, RegexOptions.IgnoreCase);
         }
 
         private static bool IsIntermissionShadowChild(Text source)
@@ -282,80 +574,18 @@ namespace UltrakULL.Harmony_Patches
                 return false;
             }
 
-            // Список паттернов, характерных для UniverseLib/UnityExplorer
-            string[] universeLibPatterns = new string[]
-            {
-        "UniverseLibCanvas",
-        "unityexplorer",
-        "com.sinai",
-        "UniverseLib",
-        "ExplorerCanvas",
-        "InspectorCanvas",
-        "MouseInspectDropdown",
-        "Dropdown List",
-        "Viewport",
-        "Inspector",
-        "PanelHolder"
-            };
-
-            // Проверить всю иерархию объекта
             Transform current = source.transform;
             while (current != null)
             {
-                string name = current.gameObject.name;
-
-                // Проверить все паттерны (без учета регистра)
-                string nameLower = name.ToLowerInvariant();
-                foreach (string pattern in universeLibPatterns)
-                {
-                    if (nameLower.Contains(pattern.ToLowerInvariant()))
-                    {
-                        // Logging.Message($"Skipping UniverseLib text: {GetFullPath(source.transform)} (matched pattern: {pattern})");
+                string name = current.name;
+                for (int i = 0; i < universeLibPatterns.Length; i++)
+                    if (name.IndexOf(universeLibPatterns[i], StringComparison.OrdinalIgnoreCase) >= 0)
                         return true;
-                    }
-                }
+
                 current = current.parent;
-            }
-
-            // Дополнительно проверить полный путь
-            string fullPath = GetFullPath(source.transform);
-            string fullPathLower = fullPath.ToLowerInvariant();
-            foreach (string pattern in universeLibPatterns)
-            {
-                if (fullPathLower.Contains(pattern.ToLowerInvariant()))
-                {
-                    // Logging.Message($"Skipping UniverseLib text by path: {fullPath} (matched pattern: {pattern})");
-                    return true;
-                }
-            }
-
-            // Отладочное логирование: если путь содержит "com.sinai", но не был распознан
-            if (fullPathLower.Contains("com.sinai"))
-            {
-                // Logging.Warn($"UniverseLib text NOT recognized despite 'com.sinai' in path: {fullPath}. Patterns checked: {string.Join(", ", universeLibPatterns)}");
             }
 
             return false;
-        }
-
-        private static string GetFullPath(Transform transform)
-        {
-            if (transform == null)
-                return string.Empty;
-
-            List<string> pathParts = new List<string>();
-            Transform current = transform;
-            while (current != null)
-            {
-                string name = current.gameObject.name;
-                // Удаляем "(Clone)" из имени для лучшего сопоставления
-                if (name.EndsWith("(Clone)"))
-                    name = name.Substring(0, name.Length - 7).TrimEnd();
-                pathParts.Add(name);
-                current = current.parent;
-            }
-            pathParts.Reverse();
-            return string.Join("/", pathParts);
         }
 
         private static TextMeshProUGUI CreateTMPSibling(Text source)
@@ -423,7 +653,7 @@ namespace UltrakULL.Harmony_Patches
             target.fontStyle = ConvertFontStyle(source.fontStyle);
         }
 
-        private static void SyncEffects(Text source, TextMeshProUGUI target)
+        private static void SyncEffects(Text source, TextMeshProUGUI target, bool skipShadow = false)
         {
             if (source == null || target == null)
             {
@@ -432,7 +662,7 @@ namespace UltrakULL.Harmony_Patches
 
             Shadow sourceShadow = source.GetComponent<Shadow>();
             Shadow targetShadow = target.GetComponent<Shadow>();
-            if (sourceShadow != null)
+            if (sourceShadow != null && !skipShadow)
             {
                 if (targetShadow == null || targetShadow.GetType() != typeof(Shadow))
                 {
@@ -482,13 +712,7 @@ namespace UltrakULL.Harmony_Patches
         private static void AddIntermissionShadow(TextMeshProUGUI tmp)
         {
             if (tmp == null) return;
-            Shadow shadow = tmp.GetComponent<Shadow>();
-            if (shadow == null)
-                shadow = tmp.gameObject.AddComponent<Shadow>();
-            shadow.effectColor = new Color(0f, 0f, 0f, 0.75f);
-            shadow.effectDistance = new Vector2(1.5f, -1.5f);
-            shadow.useGraphicAlpha = true;
-            Logging.Message($"[TMPCONV]   Shadow component added: color=({shadow.effectColor.r},{shadow.effectColor.g},{shadow.effectColor.b},{shadow.effectColor.a}), dist=({shadow.effectDistance.x},{shadow.effectDistance.y})");
+            TMPShadowTwin.EnsureShadow(tmp, new Vector2(2.25f, -2.25f));
         }
 
         private static TextAlignmentOptions ConvertAlignment(TextAnchor anchor)
@@ -532,5 +756,6 @@ namespace UltrakULL.Harmony_Patches
                     return FontStyles.Normal;
             }
         }
+
     }
 }

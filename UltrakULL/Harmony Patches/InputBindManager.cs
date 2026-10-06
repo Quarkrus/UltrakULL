@@ -15,8 +15,6 @@ namespace UltrakULL.Harmony_Patches
             if (string.IsNullOrEmpty(__result))
                 return;
 
-            Logging.Message("[ToDisplayString] " + __result);
-
             __result = CommonFunctions.GetLocalizedInput(__result);
         }
     }

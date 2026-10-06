@@ -16,7 +16,7 @@ namespace UltrakULL
             toBeContinued.text = LanguageManager.CurrentLanguage.intermission.act1_intermission_tobecontinued;
 
             Text tobeContinuedShadow = GetTextfromGameObject(GetGameObjectChild(GetGameObjectChild(intermissionObject, "Panel (1)"), "Text"));
-            tobeContinuedShadow.text = LanguageManager.CurrentLanguage.intermission.act1_intermission_tobecontinuedshadow;
+            tobeContinuedShadow.text = toBeContinued.text;
 
             GameObject act1EndObject = GetGameObjectChild(GetGameObjectChild(intermissionObject, "Act End Message"), "Sound 1");
 
@@ -36,7 +36,7 @@ namespace UltrakULL
             toBeContinued.text = LanguageManager.CurrentLanguage.intermission.act2_intermission_tobecontinued;
 
             Text tobeContinuedShadow = GetTextfromGameObject(GetGameObjectChild(GetGameObjectChild(intermissionObject, "Panel (1)"), "Text"));
-            tobeContinuedShadow.text = LanguageManager.CurrentLanguage.intermission.act2_intermission_tobecontinuedshadow;
+            tobeContinuedShadow.text = toBeContinued.text;
             
             GameObject act2EndObject = GetGameObjectChild(GetGameObjectChild(intermissionObject, "Act End Message"), "Sound 1");
 

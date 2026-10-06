@@ -440,17 +440,8 @@ namespace UltrakULL
                     if (tmpFont != null)
                     {
                         CustomMainFontTMP = tmpFont;
-                        // Create overlay material for this font
-                        if (GlobalFontTMPOverlayMat != null)
-                        {
-                            CustomMainFontTMPOverlayMat = new Material(GlobalFontTMPOverlayMat);
-                            CustomMainFontTMPOverlayMat.name = $"{tmpFont.name}_Overlay";
-                            Logging.Message($"Created overlay material for MainFont: {CustomMainFontTMPOverlayMat.name}");
-                        }
-                        else
-                        {
-                            Logging.Warn("GlobalFontTMPOverlayMat is null, cannot create overlay material for MainFont");
-                        }
+                        CustomMainFontTMPOverlayMat = TMPFontUtils.CreateOverlayMaterial(
+                            tmpFont, GlobalFontTMPOverlayMat, $"{tmpFont.name}_Overlay");
                         Logging.Message($"Loaded custom MainFont TMP: {fonts.MainFont} (from {Path.GetFileName(mainFontPath)})");
                     }
                     else
@@ -474,17 +465,8 @@ namespace UltrakULL
                     if (tmpFont != null)
                     {
                         CustomMuseumFontTMP = tmpFont;
-                        // Create overlay material for this font
-                        if (GlobalFontTMPOverlayMat != null)
-                        {
-                            CustomMuseumFontTMPOverlayMat = new Material(GlobalFontTMPOverlayMat);
-                            CustomMuseumFontTMPOverlayMat.name = $"{tmpFont.name}_Overlay";
-                            Logging.Message($"Created overlay material for MuseumFont: {CustomMuseumFontTMPOverlayMat.name}");
-                        }
-                        else
-                        {
-                            Logging.Warn("GlobalFontTMPOverlayMat is null, cannot create overlay material for MuseumFont");
-                        }
+                        CustomMuseumFontTMPOverlayMat = TMPFontUtils.CreateOverlayMaterial(
+                            tmpFont, GlobalFontTMPOverlayMat, $"{tmpFont.name}_Overlay");
                         Logging.Message($"Loaded custom MuseumFont TMP: {fonts.MuseumFont} (from {Path.GetFileName(museumFontPath)})");
                     }
                     else
@@ -508,17 +490,8 @@ namespace UltrakULL
                     if (tmpFont != null)
                     {
                         CustomTerminalFontTMP = tmpFont;
-                        // Create overlay material for this font
-                        if (GlobalFontTMPOverlayMat != null)
-                        {
-                            CustomTerminalFontTMPOverlayMat = new Material(GlobalFontTMPOverlayMat);
-                            CustomTerminalFontTMPOverlayMat.name = $"{tmpFont.name}_Overlay";
-                            Logging.Message($"Created overlay material for TerminalFont: {CustomTerminalFontTMPOverlayMat.name}");
-                        }
-                        else
-                        {
-                            Logging.Warn("GlobalFontTMPOverlayMat is null, cannot create overlay material for TerminalFont");
-                        }
+                        CustomTerminalFontTMPOverlayMat = TMPFontUtils.CreateOverlayMaterial(
+                            tmpFont, GlobalFontTMPOverlayMat, $"{tmpFont.name}_Overlay");
                         Logging.Message($"Loaded custom TerminalFont TMP: {fonts.TerminalFont} (from {Path.GetFileName(terminalFontPath)})");
                     }
                     else
@@ -543,17 +516,8 @@ namespace UltrakULL
                     if (tmpFont != null)
                     {
                         CustomSecretTerminalFontTMP = tmpFont;
-                        // Create overlay material for this font
-                        if (GlobalFontTMPOverlayMat != null)
-                        {
-                            CustomSecretTerminalFontTMPOverlayMat = new Material(GlobalFontTMPOverlayMat);
-                            CustomSecretTerminalFontTMPOverlayMat.name = $"{tmpFont.name}_Overlay";
-                            Logging.Message($"Created overlay material for SecretTerminalFont: {CustomSecretTerminalFontTMPOverlayMat.name}");
-                        }
-                        else
-                        {
-                            Logging.Warn("GlobalFontTMPOverlayMat is null, cannot create overlay material for SecretTerminalFont");
-                        }
+                        CustomSecretTerminalFontTMPOverlayMat = TMPFontUtils.CreateOverlayMaterial(
+                            tmpFont, GlobalFontTMPOverlayMat, $"{tmpFont.name}_Overlay");
                         Logging.Message($"Loaded custom SecretTerminalFont TMP: {fonts.SecretTerminalFont} (from {Path.GetFileName(secretFontPath)})");
                     }
                     else

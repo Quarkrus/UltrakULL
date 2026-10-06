@@ -1,48 +1,100 @@
 {
     "version": "2.0.0",
+
     "tasks": [
         {
-            "label": "build-only",
-            "command": "dotnet",
+            "label": "UltrakULL: Build Release",
             "type": "process",
+            "command": "dotnet",
             "args": [
                 "build",
                 "${workspaceFolder}/UltrakULL.sln",
                 "--configuration",
                 "Release"
             ],
-            "problemMatcher": "$msCompile"
+            "problemMatcher": "$msCompile",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
         },
+
         {
-            "label": "restore",
+            "label": "UltrakULL: Restore",
+            "type": "process",
             "command": "dotnet",
             "args": [
                 "restore",
                 "${workspaceFolder}/UltrakULL.sln"
-            ]
+            ],
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
         },
+
         {
-            "label": "open-output-folder",
-            "type": "shell",
-            "windows": {
-                "command": "explorer.exe",
-                "args": ["${workspaceFolder}\\UltrakULL\\bin\\Release"]
-            },
+            "label": "UltrakULL: Rebuild Release",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "build",
+                "${workspaceFolder}/UltrakULL.sln",
+                "--configuration",
+                "Release",
+                "--no-incremental"
+            ],
+            "problemMatcher": "$msCompile",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+
+        {
+            "label": "UltrakULL: Clean",
+            "type": "process",
+            "command": "dotnet",
+            "args": [
+                "clean",
+                "${workspaceFolder}/UltrakULL.sln",
+                "--configuration",
+                "Release"
+            ],
+            "problemMatcher": "$msCompile",
+            "presentation": {
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false
+            }
+        },
+
+        {
+            "label": "UltrakULL: Open Release Output",
+            "type": "process",
+            "command": "explorer.exe",
+            "args": [
+                "${workspaceFolder}\\UltrakULL\\bin\\Release"
+            ],
+            "problemMatcher": [],
             "presentation": {
                 "reveal": "never",
                 "focus": false,
                 "panel": "shared",
                 "showReuseMessage": false
-            },
-            "problemMatcher": []
-        },
-        {
-            "label": "build-release",
-            "dependsOrder": "sequence",
-            "dependsOn": ["restore", "build-only", "open-output-folder"],
-            "group": {
-                "kind": "build",
-                "isDefault": true
             }
         }
     ]
