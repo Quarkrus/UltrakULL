@@ -8,10 +8,29 @@ using TMPro;
 using UltrakULL.json;
 using UltrakULL;
 using UnityEngine;
+using UnityEngine.UI;
 using BepInEx;
 
 namespace UltrakULL.Harmony_Patches
 {
+	internal sealed class TMPOverlayMaterialTracker : MonoBehaviour
+	{
+		private Material generatedMaterial;
+
+		public void SetGeneratedMaterial(Material material)
+		{
+			if (generatedMaterial != null && generatedMaterial != material)
+				Destroy(generatedMaterial);
+			generatedMaterial = material;
+		}
+
+		private void OnDestroy()
+		{
+			if (generatedMaterial != null)
+				Destroy(generatedMaterial);
+		}
+	}
+
 	public class TextMeshProFontSwap
 	{
 		private static bool IsBossBarText(TMP_Text tmpText)
@@ -42,6 +61,89 @@ namespace UltrakULL.Harmony_Patches
 			}
 
 			return false;
+		}
+
+		private static bool IsHealthText(TMP_Text tmpText)
+		{
+			if (tmpText == null)
+				return false;
+
+			// A converted legacy hpText is a sibling of the original Text component.
+			// It is therefore not equal to HealthBar.hpText and must be recognised
+			// before the hierarchy check below.
+			var convertedTmp = tmpText as TextMeshProUGUI;
+			if (convertedTmp != null && TextToTMPConverter.IsConvertedFromHealthBar(convertedTmp))
+				return true;
+
+			Transform current = tmpText.transform;
+			while (current != null)
+			{
+				var healthBar = current.GetComponent<HealthBar>();
+				if (healthBar != null)
+				{
+					// Check if this text is the hpText or HP Symbol of this HealthBar
+					var hpTextUGUI = healthBar.hpText as TextMeshProUGUI;
+					if (hpTextUGUI != null && hpTextUGUI == tmpText)
+						return true;
+
+					// Check for HP Symbol child
+					var hpSymbol = current.GetComponentsInChildren<TextMeshProUGUI>(true)
+						.FirstOrDefault(t => t != null && (t.name.IndexOf("HP Symbol", StringComparison.OrdinalIgnoreCase) >= 0 || t.name.IndexOf("Plus", StringComparison.OrdinalIgnoreCase) >= 0));
+					if (hpSymbol != null && hpSymbol == tmpText)
+						return true;
+
+					return false;
+				}
+
+				current = current.parent;
+			}
+
+			// Check for Classic HUD health texts: AltHud/Filler/Health/Title or AltHud (2)/Filler/Health (1)/Title
+			Transform parent = tmpText.transform.parent;
+			while (parent != null)
+			{
+				string parentName = parent.name;
+				if ((parentName.IndexOf("AltHud", StringComparison.OrdinalIgnoreCase) >= 0) &&
+					parent.parent != null)
+				{
+					// Look for Health/Title or Health (1)/Title in the hierarchy
+					var healthTitle = parent.GetComponentsInChildren<TextMeshProUGUI>(true)
+						.FirstOrDefault(t => t != null && t == tmpText &&
+							(t.transform.parent != null &&
+							 (t.transform.parent.name.IndexOf("Health", StringComparison.OrdinalIgnoreCase) >= 0)));
+					if (healthTitle != null)
+						return true;
+				}
+				parent = parent.parent;
+			}
+
+			return false;
+		}
+
+		private static bool IsSpeedometerText(TMP_Text tmpText)
+		{
+			if (tmpText == null)
+				return false;
+
+			Transform current = tmpText.transform;
+			while (current != null)
+			{
+				if (current.GetComponent<Speedometer>() != null)
+					return true;
+				current = current.parent;
+			}
+
+			return false;
+		}
+
+		private static bool IsHpSymbolText(TMP_Text tmpText)
+		{
+			if (tmpText == null)
+				return false;
+
+			string name = tmpText.gameObject.name;
+			return name.IndexOf("HP Symbol", StringComparison.OrdinalIgnoreCase) >= 0 ||
+				name.IndexOf("Plus", StringComparison.OrdinalIgnoreCase) >= 0;
 		}
 
 		private static class TMPFontLogger
@@ -92,7 +194,7 @@ namespace UltrakULL.Harmony_Patches
 		[HarmonyPatch(typeof(TextMeshProUGUI), "OnEnable")]
 		public static class TextMeshProFontSwapper
 		{
-			private static List<IntPtr> objectsFixed = new List<IntPtr>();
+			private static readonly HashSet<IntPtr> objectsFixed = new HashSet<IntPtr>();
 
 			public static void ClearCache()
 			{
@@ -102,11 +204,41 @@ namespace UltrakULL.Harmony_Patches
             [HarmonyPostfix]
 			public static void SwapFont(ref TextMeshProUGUI __instance, IntPtr ___m_CachedPtr)
 			{
-				if ((objectsFixed.Count <= 0 || !objectsFixed.Contains(___m_CachedPtr)) && Core.TMPFontReady && (!CommonFunctions.isUsingEnglish() || !(CommonFunctions.GetCurrentSceneName() != "Main Menu")))
-				{
+                if (__instance == null || TMPShadowTwin.IsShadowGraphic(__instance))
+                    return;
+
+                if (!objectsFixed.Contains(___m_CachedPtr) && Core.TMPFontReady && (!CommonFunctions.isUsingEnglish() || !(CommonFunctions.GetCurrentSceneName() != "Main Menu")))
+                {
                     SwapTMPFont(ref __instance);
 					objectsFixed.Add(___m_CachedPtr);
 				}
+
+				if (Core.TMPFontReady)
+				{
+					bool requiresForcedShadow = TMPShadowPolicy.RequiresForcedShadow(__instance.transform);
+					if (requiresForcedShadow)
+					{
+						HudControllerPatch.TrackForcedShadowText(__instance);
+						var hud = HudController.Instance;
+						if (hud != null)
+							HudControllerPatch.ApplyOverlayZTest(
+								__instance,
+								HudControllerPatch.isOverlaid,
+								hud.overlayTextMaterial,
+								hud.normalTextMaterial,
+								forceManagedShadow: true);
+					}
+				}
+			}
+		}
+
+		[HarmonyPatch(typeof(TextMeshProUGUI), "OnDisable")]
+		public static class TextMeshProFontSwapDisablePatch
+		{
+			[HarmonyPostfix]
+			public static void UntrackForcedShadowText(TextMeshProUGUI __instance)
+			{
+				HudControllerPatch.UntrackForcedShadowText(__instance);
 			}
 		}
 
@@ -127,6 +259,19 @@ namespace UltrakULL.Harmony_Patches
 			}
 
 			private static bool? _isOverlaid = null;
+			private static readonly HashSet<TextMeshProUGUI> forcedShadowTexts = new HashSet<TextMeshProUGUI>();
+
+			public static void TrackForcedShadowText(TextMeshProUGUI text)
+			{
+				if (text != null && !TMPShadowTwin.IsShadowGraphic(text))
+					forcedShadowTexts.Add(text);
+			}
+
+			public static void UntrackForcedShadowText(TextMeshProUGUI text)
+			{
+				if (text != null)
+					forcedShadowTexts.Remove(text);
+			}
 
 			public static bool isOverlaid
 			{
@@ -152,30 +297,28 @@ private static Material GetCurrentMaterialSafe(TMP_Text text)
 		{
 			if (text == null)
 				return null;
-			if (m_sharedMaterialField != null)
+			try
 			{
-				Material mat = m_sharedMaterialField.GetValue(text) as Material;
+				// Use fontMaterial property getter which returns the properly configured instance material
+				// with all keywords (including UNDERLAY_ON) properly set
+				Material mat = text.fontMaterial;
 				if (mat != null)
 					return mat;
 			}
+			catch { }
 			return text.fontSharedMaterial;
 		}
 
-		private static void CopyUnderlayProps(Material from, Material to)
+		private static bool IsAdditionalForcedShadowText(TextMeshProUGUI text, TMP_Text[] hudTextElements)
 		{
-			if (from == null || to == null)
-				return;
-			string[] props = { "_UnderlayColor", "_UnderlayOffset", "_UnderlaySoftness", "_UnderlayDilate" };
-			foreach (var prop in props)
-			{
-				if (from.HasProperty(prop) && to.HasProperty(prop))
-				{
-					if (prop == "_UnderlayColor" || prop == "_UnderlayOffset")
-						to.SetVector(prop, from.GetVector(prop));
-					else
-						to.SetFloat(prop, from.GetFloat(prop));
-				}
-			}
+			if (text == null ||
+			    TMPShadowTwin.IsShadowGraphic(text) ||
+			    !TMPShadowPolicy.RequiresForcedShadow(text.transform) ||
+			    text.GetComponentInParent<HealthBar>() != null ||
+			    text.GetComponentInParent<Speedometer>() != null)
+				return false;
+
+			return hudTextElements == null || Array.IndexOf(hudTextElements, text) < 0;
 		}
 
 		private static void ForceRendererUpdate(TMP_Text text, Material mat)
@@ -203,26 +346,245 @@ private static Material GetCurrentMaterialSafe(TMP_Text text)
 			text.SetMaterialDirty();
 		}
 
-public static void ApplyOverlayZTest(TMP_Text text, bool onTop, Material overlayMat, Material normalMat)
+		public static void ApplyOverlayZTest(
+			TMP_Text text,
+			bool onTop,
+			Material overlayMat,
+			Material normalMat,
+			bool forceManagedShadow = false)
 		{
 			if (text == null)
 				return;
-			Material refMat = onTop ? overlayMat : normalMat;
+			if (TMPShadowTwin.IsShadowGraphic(text))
+				return;
+
+			bool isHealthText = IsHealthText(text);
+			bool isSpeedometerText = IsSpeedometerText(text);
+			bool isHpSymbol = IsHpSymbolText(text);
+			bool forceTextShadow = TMPShadowPolicy.RequiresForcedShadow(text.transform);
+			if (text is TextMeshProUGUI forcedText && forceTextShadow)
+				TrackForcedShadowText(forcedText);
+
+			if (!isHealthText)
+			{
+				// Also check classic HUD health hierarchy directly
+				Transform parent = text.transform.parent;
+				while (parent != null)
+				{
+					string parentName = parent.name;
+					if ((parentName.IndexOf("AltHud", StringComparison.OrdinalIgnoreCase) >= 0) &&
+						parent.parent != null)
+					{
+						var healthTitle = parent.GetComponentsInChildren<TextMeshProUGUI>(true)
+							.FirstOrDefault(t => t != null && t == text &&
+								(t.transform.parent != null &&
+								 (t.transform.parent.name.IndexOf("Health", StringComparison.OrdinalIgnoreCase) >= 0)));
+						if (healthTitle != null)
+						{
+							isHealthText = true;
+							break;
+						}
+					}
+					parent = parent.parent;
+				}
+			}
+
+			bool needsManagedShadow = forceManagedShadow ||
+				forceTextShadow ||
+				((isHealthText || isSpeedometerText) && !isHpSymbol);
+			Vector2 shadowDistance = TMPShadowPolicy.IsAltHud(text)
+				? new Vector2(1.25f, -1.25f)
+				: new Vector2(1.5f, -1.5f);
+			shadowDistance = TMPFontUtils.GetGraphicShadowDistance(
+				text as TextMeshProUGUI,
+				shadowDistance);
+			Vector2 overlayShadowDistance = shadowDistance;
+			if (onTop && (isHealthText || isSpeedometerText) && !isHpSymbol)
+				overlayShadowDistance = new Vector2(3f, -3f);
+			Color shadowColor = TMPFontUtils.GetGraphicShadowColor(
+				text as TextMeshProUGUI,
+				new Color(0f, 0f, 0f, 0.75f));
+			if (onTop && (isHealthText || isSpeedometerText) && !isHpSymbol)
+				shadowColor.a = shadowColor.a > 0.001f ? Mathf.Min(shadowColor.a, 0.55f) : 0.55f;
+Material refMat = onTop ? overlayMat : normalMat;
 			if (refMat == null)
 				return;
 			Material currentMat = GetCurrentMaterialSafe(text);
-			Material newMat = new Material(refMat);
-			newMat.renderQueue = 5000;
-			newMat.SetFloat("_ZTest", onTop ? 8f : 4f);
-			if (currentMat != null && currentMat.HasProperty("_MainTex"))
+			if (currentMat == null)
+				return;
+
+			// The game's HUD overlay material has the shader variant and render
+			// state expected by Always On Top. Use the matching mod font preset as
+			// the base where possible, then transfer the active font atlas.
+			Material baseMat = onTop
+				? (GetOverlayMaterialForFont(text) ?? refMat)
+				: ((text.font != null ? text.font.material : null) ?? normalMat ?? refMat);
+			if (onTop && needsManagedShadow && text.font != null)
 			{
-				newMat.SetTexture("_MainTex", currentMat.GetTexture("_MainTex"));
+				Material fontMaterial = text.font.material;
+				if (fontMaterial != null &&
+				    TMPFontUtils.HasUnderlayOffset(fontMaterial) &&
+				    fontMaterial.HasProperty("_UnderlayColor") &&
+				    fontMaterial.HasProperty("_ZTest"))
+				{
+					baseMat = fontMaterial;
+				}
 			}
-			CopyUnderlayProps(currentMat, newMat);
-			
+			Material newMat = new Material(baseMat);
+			newMat.renderQueue = refMat.renderQueue;
+			if (newMat.HasProperty("_ZTest"))
+				newMat.SetFloat("_ZTest", onTop ? 8f : 4f);
+			else
+			{
+				UnityEngine.Object.Destroy(newMat);
+				newMat = new Material(refMat);
+				newMat.renderQueue = refMat.renderQueue;
+				if (newMat.HasProperty("_ZTest"))
+					newMat.SetFloat("_ZTest", onTop ? 8f : 4f);
+			}
+
+			TMPFontUtils.CopyFontRenderingProperties(currentMat, newMat);
+
+			Material underlaySource = currentMat.IsKeywordEnabled("UNDERLAY_ON")
+				? currentMat
+				: text.fontSharedMaterial;
+			bool sourceHasUnderlay = underlaySource != null && underlaySource.IsKeywordEnabled("UNDERLAY_ON");
+			bool keepUnderlay = sourceHasUnderlay || needsManagedShadow;
+			bool underlayConfigured = false;
+			bool needsOverlayShadowTwin = onTop && (needsManagedShadow || sourceHasUnderlay);
+
+			if (keepUnderlay && !onTop)
+			{
+				bool hasUnderlayProperties = TMPFontUtils.HasUnderlayOffset(newMat) && newMat.HasProperty("_UnderlayColor");
+				if (hasUnderlayProperties)
+				{
+					if (needsManagedShadow)
+						underlayConfigured = TMPFontUtils.ConfigureUnderlayFromText(
+							newMat,
+							text as TextMeshProUGUI,
+							new Vector4(0f, 0f, 0f, 0.75f),
+							new Vector4(1.5f, -1.5f, 0f, 0f),
+							0f,
+							0f);
+					else if (sourceHasUnderlay)
+						underlayConfigured = TMPFontUtils.CopyUnderlayProperties(underlaySource, newMat);
+					else
+						underlayConfigured = TMPFontUtils.ConfigureUnderlay(
+							newMat,
+							new Vector4(0f, 0f, 0f, 0.75f),
+							new Vector4(1.5f, -1.5f, 0f, 0f),
+							0f,
+							0f);
+				}
+			}
+			else
+			{
+				newMat.DisableKeyword("UNDERLAY_ON");
+			}
+
+			if (needsOverlayShadowTwin)
+			{
+				newMat.DisableKeyword("UNDERLAY_ON");
+				TMPFontUtils.SetGraphicShadowEnabled(text as TextMeshProUGUI, false);
+				TMPOverlayShadowFallback.Set(text as TextMeshProUGUI, false, Vector2.zero);
+			}
+			else if (needsManagedShadow && !underlayConfigured)
+			{
+				newMat.DisableKeyword("UNDERLAY_ON");
+				TMPOverlayShadowFallback.Set(text as TextMeshProUGUI, true, shadowDistance);
+			}
+			else
+			{
+				TMPFontUtils.SetGraphicShadowEnabled(text as TextMeshProUGUI, false);
+				TMPOverlayShadowFallback.Set(text as TextMeshProUGUI, false, Vector2.zero);
+			}
 			text.fontMaterial = newMat;
-			
+			TMPOverlayMaterialTracker materialTracker = text.GetComponent<TMPOverlayMaterialTracker>();
+			if (materialTracker == null)
+				materialTracker = text.gameObject.AddComponent<TMPOverlayMaterialTracker>();
+			materialTracker.SetGeneratedMaterial(newMat);
 			ForceRendererUpdate(text, newMat);
+			TMPShadowTwin.SetOverlayShadow(
+				text as TextMeshProUGUI,
+				needsOverlayShadowTwin,
+				overlayShadowDistance,
+				shadowColor);
+		}
+
+		private static Material GetOverlayMaterialForFont(TMP_Text text)
+		{
+			if (text == null || text.font == null)
+				return null;
+
+			if (text.font == Core.CustomMainFontTMP)
+				return Core.CustomMainFontTMPOverlayMat;
+			if (text.font == Core.CustomMuseumFontTMP)
+				return Core.CustomMuseumFontTMPOverlayMat;
+			if (text.font == Core.CustomTerminalFontTMP)
+				return Core.CustomTerminalFontTMPOverlayMat;
+			if (text.font == Core.CustomSecretTerminalFontTMP)
+				return Core.CustomSecretTerminalFontTMPOverlayMat;
+			if (text.font == Core.CJKFontTMP)
+				return Core.CJKFontTMPOverlayMat;
+			if (text.font == Core.JaFontTMP)
+				return Core.jaFontTMPOverlayMat;
+
+			return Core.GlobalFontTMPOverlayMat;
+		}
+
+		public static void ApplyOverlayToAllHealthBarTexts(
+			HealthBar hb,
+			bool onTop,
+			Material overlayMat,
+			Material normalMat,
+			HashSet<TMP_Text> processedTexts = null)
+		{
+			if (hb == null)
+				return;
+
+			HashSet<TMP_Text> alreadyApplied = processedTexts ?? new HashSet<TMP_Text>();
+
+			if (hb.hpText != null)
+			{
+				var hpTextUGUI = hb.hpText as TextMeshProUGUI;
+				if (hpTextUGUI != null)
+				{
+					if (alreadyApplied.Add(hpTextUGUI))
+						ApplyOverlayZTest(hpTextUGUI, onTop, overlayMat, normalMat, forceManagedShadow: true);
+				}
+				else
+				{
+					var hpTextGameObject = hb.hpText?.gameObject;
+					if (hpTextGameObject != null)
+					{
+						var legacyText = hpTextGameObject.GetComponent<Text>();
+						if (legacyText != null)
+						{
+							var convertedTMP = TextToTMPConverter.GetConvertedTMP(legacyText);
+							if (convertedTMP != null)
+							{
+								if (alreadyApplied.Add(convertedTMP))
+									ApplyOverlayZTest(convertedTMP, onTop, overlayMat, normalMat, forceManagedShadow: true);
+							}
+						}
+					}
+				}
+			}
+
+			var hpSymbol = hb.transform.GetComponentsInChildren<TextMeshProUGUI>(true)
+				.FirstOrDefault(t => t != null && (t.name.IndexOf("HP Symbol", StringComparison.OrdinalIgnoreCase) >= 0 || t.name.IndexOf("Plus", StringComparison.OrdinalIgnoreCase) >= 0));
+			if (hpSymbol != null)
+			{
+				if (alreadyApplied.Add(hpSymbol))
+					ApplyOverlayZTest(hpSymbol, onTop, overlayMat, normalMat, forceManagedShadow: true);
+			}
+
+			// Any other TMP under the bar (classic HUD "HEALTH" title, etc.)
+			foreach (var t in hb.GetComponentsInChildren<TextMeshProUGUI>(true))
+			{
+				if (t != null && alreadyApplied.Add(t))
+					ApplyOverlayZTest(t, onTop, overlayMat, normalMat);
+			}
 		}
 
 		[HarmonyPatch("SetAlwaysOnTop")]
@@ -236,23 +598,27 @@ public static void ApplyOverlayZTest(TMP_Text text, bool onTop, Material overlay
 				HealthBar[] healthBars = UnityEngine.Object.FindObjectsOfType<HealthBar>();
 				Speedometer[] speedometers = UnityEngine.Object.FindObjectsOfType<Speedometer>();
 
-foreach (HealthBar hb in healthBars)
+				HashSet<TMP_Text> processedTexts = new HashSet<TMP_Text>();
+
+				foreach (HealthBar hb in healthBars)
 				{
-					if (hb == null || hb.hpText == null)
+					if (hb == null)
 						continue;
-					ApplyOverlayZTest(hb.hpText, onTop, ___overlayTextMaterial, ___normalTextMaterial);
+					ApplyOverlayToAllHealthBarTexts(hb, onTop, ___overlayTextMaterial, ___normalTextMaterial, processedTexts);
 				}
 
 				foreach (Speedometer spd in speedometers)
 				{
 					if (spd == null || spd.textMesh == null)
 						continue;
-					ApplyOverlayZTest(spd.textMesh, onTop, ___overlayTextMaterial, ___normalTextMaterial);
-				}
-
-				if (CommonFunctions.isUsingEnglish())
-				{
-					return true;
+					if (processedTexts.Add(spd.textMesh))
+						ApplyOverlayZTest(
+							spd.textMesh,
+							onTop,
+							___overlayTextMaterial,
+							___normalTextMaterial,
+							forceManagedShadow: true
+						);
 				}
 
 				if (___textElements != null && ___textElements.Length != 0)
@@ -262,10 +628,17 @@ foreach (HealthBar hb in healthBars)
 					{
 						if (val == null)
 							continue;
-						ApplyOverlayZTest(val, onTop, ___overlayTextMaterial, ___normalTextMaterial);
+						if (processedTexts.Add(val))
+							ApplyOverlayZTest(val, onTop, ___overlayTextMaterial, ___normalTextMaterial);
 					}
 				}
-}
+
+				foreach (TextMeshProUGUI text in forcedShadowTexts)
+				{
+					if (IsAdditionalForcedShadowText(text, ___textElements) && processedTexts.Add(text))
+						ApplyOverlayZTest(text, onTop, ___overlayTextMaterial, ___normalTextMaterial, forceManagedShadow: true);
+				}
+			}
 			catch (Exception e)
 			{
 				Logging.Warn("Failed to apply Always On Top font swap");
@@ -274,25 +647,45 @@ foreach (HealthBar hb in healthBars)
 			return false;
 		}
 
-		public static void ReapplyOverlayToAll()
+		public static void ReapplyOverlayToAll(bool onTop)
 		{
 			var hud = HudController.Instance;
 			if (hud == null) return;
 
+			HashSet<TMP_Text> processedTexts = new HashSet<TMP_Text>();
+
 			foreach (var hb in UnityEngine.Object.FindObjectsOfType<HealthBar>())
 			{
-				if (hb?.hpText != null) ApplyOverlayZTest(hb.hpText, true, hud.overlayTextMaterial, hud.normalTextMaterial);
-				// HP Symbol ("+" sign)
-				var hpSymbol = hb.transform.GetComponentsInChildren<TextMeshProUGUI>(true)
-					.FirstOrDefault(t => t != null && (t.name.IndexOf("HP Symbol", StringComparison.OrdinalIgnoreCase) >= 0 || t.name.IndexOf("Plus", StringComparison.OrdinalIgnoreCase) >= 0));
-				if (hpSymbol != null) ApplyOverlayZTest(hpSymbol, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+				if (hb != null)
+					ApplyOverlayToAllHealthBarTexts(hb, onTop, hud.overlayTextMaterial, hud.normalTextMaterial, processedTexts);
 			}
 
 			foreach (var spd in UnityEngine.Object.FindObjectsOfType<Speedometer>())
-				if (spd?.textMesh != null) ApplyOverlayZTest(spd.textMesh, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+				if (spd?.textMesh != null)
+					if (processedTexts.Add(spd.textMesh))
+						ApplyOverlayZTest(
+							spd.textMesh,
+							onTop,
+							hud.overlayTextMaterial,
+							hud.normalTextMaterial,
+							forceManagedShadow: true
+						);
 
 			if (!CommonFunctions.isUsingEnglish() && hud.textElements != null)
-				foreach (var t in hud.textElements) if (t != null) ApplyOverlayZTest(t, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+				foreach (var t in hud.textElements)
+					if (t != null && processedTexts.Add(t))
+						ApplyOverlayZTest(t, onTop, hud.overlayTextMaterial, hud.normalTextMaterial);
+
+			foreach (TextMeshProUGUI text in forcedShadowTexts)
+			{
+				bool wasAppliedAsHudElement = !CommonFunctions.isUsingEnglish() &&
+					hud.textElements != null &&
+					Array.IndexOf(hud.textElements, text) >= 0;
+				if (!wasAppliedAsHudElement &&
+				    IsAdditionalForcedShadowText(text, null) &&
+				    processedTexts.Add(text))
+					ApplyOverlayZTest(text, onTop, hud.overlayTextMaterial, hud.normalTextMaterial, forceManagedShadow: true);
+			}
 		}
 	}
 
@@ -337,7 +730,7 @@ foreach (HealthBar hb in healthBars)
 			}
 		}
 
-        public static void SwapTMPFont(ref TextMeshProUGUI __instance, bool onTop = false, bool editOverlayStatus = false, bool isConvertedFromText = false, string originalFontName = null)
+        public static void SwapTMPFont(ref TextMeshProUGUI __instance, bool onTop = false, bool editOverlayStatus = false, bool isConvertedFromText = false, string originalFontName = null, bool forceUnderlay = false, bool skipIntermissionUnderlay = false)
         {
             // Защита от null
             if (__instance == null)
@@ -350,26 +743,27 @@ foreach (HealthBar hb in healthBars)
             if (__instance.text != null && __instance.text.Contains("■") && __instance.text.Contains("|"))
                 return;
 
-            if (IsBossBarText((TMP_Text)__instance))
-            {
-                TMP_FontAsset bossFont = Core.CustomMainFontTMP ?? Core.GlobalFontTMP;
-                if (bossFont != null && ((TMP_Text)__instance).font != bossFont)
-                {
-                    ((TMP_Text)__instance).font = bossFont;
-                }
-                return;
-            }
+if (IsBossBarText((TMP_Text)__instance) || IsHealthText((TMP_Text)__instance))
+			{
+				TMP_FontAsset bossFont = Core.CustomMainFontTMP ?? Core.GlobalFontTMP;
+				if (bossFont != null && ((TMP_Text)__instance).font != bossFont)
+				{
+					((TMP_Text)__instance).font = bossFont;
+				}
+				// Apply underlay/shadow for health bar text (HP text, HP Symbol, boss bars)
+				TMPFontUtils.ApplyUnderlayAndZTest(__instance,
+					new Vector4(0f, 0f, 0f, 0.75f),
+					new Vector4(1.5f, -1.5f, 0f, 0f),
+					0f, 0f,
+					false, true, onTop, false, bossFont, null, null);
+				return;
+			}
 
             // Log the original font before replacement
             TMPFontLogger.LogFont(__instance.font);
 
-			string text = null;
-			if (((TMP_Text)__instance).transform.parent != null && ((TMP_Text)__instance).transform.parent.parent != null)
-			{
-				text = ((Component)((TMP_Text)__instance).transform.parent.parent).gameObject.name + "/" + ((Component)((TMP_Text)__instance).transform.parent).gameObject.name + "/" + ((Component)((TMP_Text)__instance).transform).gameObject.name;
-			}
 			string text2 = LanguageManager.CurrentLanguage.metadata.langName.ToLower().Substring(0, 2);
-			bool isUnderlaid = ((Component)__instance).gameObject.name.Contains("NameText") || ((Component)__instance).gameObject.name.Contains("LayerText") || ((Component)((TMP_Text)__instance).transform.parent).gameObject.name.Contains("Cheats Info") || (text?.Equals("ReadingScanned/Panel/Text (1)") ?? false);
+			bool isUnderlaid = forceUnderlay || TMPShadowPolicy.RequiresForcedShadow(__instance.transform);
 			bool isOverlay = onTop;
 			Material currentMaterial = ((TMP_Text)__instance).fontMaterial;
 			Material sharedMatFallback = ((TMP_Text)__instance).fontSharedMaterial;
@@ -382,60 +776,35 @@ foreach (HealthBar hb in healthBars)
 			float underlaySoftness = 0f;
 			float underlayDilate = 0f;
 			bool preserveExistingUnderlay = false;
-
-			if (currentMaterial != null && currentMaterial.HasProperty("_UnderlayColor"))
+			Material underlaySource = currentMaterial;
+			if ((underlaySource == null || !underlaySource.IsKeywordEnabled("UNDERLAY_ON")) &&
+			    sharedMatFallback != null &&
+			    sharedMatFallback.IsKeywordEnabled("UNDERLAY_ON"))
 			{
-				underlayColor = currentMaterial.GetVector("_UnderlayColor");
-				preserveExistingUnderlay = underlayColor.w > 0.001f;
+				underlaySource = sharedMatFallback;
 			}
-			if (currentMaterial != null && currentMaterial.HasProperty("_UnderlayOffset"))
+			if (underlaySource != null && underlaySource.IsKeywordEnabled("UNDERLAY_ON"))
 			{
-				underlayOffset = currentMaterial.GetVector("_UnderlayOffset");
-				preserveExistingUnderlay = preserveExistingUnderlay ||
-					Mathf.Abs(underlayOffset.x) > 0.001f ||
-					Mathf.Abs(underlayOffset.y) > 0.001f;
+				if (underlaySource.HasProperty("_UnderlayColor"))
+					underlayColor = underlaySource.GetVector("_UnderlayColor");
+				underlayOffset = TMPFontUtils.GetUnderlayOffset(underlaySource, Vector4.zero);
+				if (underlaySource.HasProperty("_UnderlaySoftness"))
+					underlaySoftness = underlaySource.GetFloat("_UnderlaySoftness");
+				if (underlaySource.HasProperty("_UnderlayDilate"))
+					underlayDilate = underlaySource.GetFloat("_UnderlayDilate");
+				preserveExistingUnderlay = true;
 			}
-			if (currentMaterial != null && currentMaterial.HasProperty("_UnderlaySoftness"))
+			if (isUnderlaid && (!preserveExistingUnderlay || underlayColor.w <= 0.001f))
 			{
-				underlaySoftness = currentMaterial.GetFloat("_UnderlaySoftness");
-			}
-			if (currentMaterial != null && currentMaterial.HasProperty("_UnderlayDilate"))
-			{
-
-			}
-
-			if (preserveExistingUnderlay && currentMaterial != null && !currentMaterial.IsKeywordEnabled("UNDERLAY_ON"))
-			{
-				preserveExistingUnderlay = false;
-				//Logging.Message($"[SWAP]   preserveExisting canceled: source keyword=False");
+				underlayColor = new Vector4(0f, 0f, 0f, 0.75f);
+				underlayOffset = new Vector4(1.5f, -1.5f, 0f, 0f);
+				underlaySoftness = 0f;
+				underlayDilate = 0f;
 			}
 			//Logging.Message($"[SWAP]   after fontMaterial read: underlayColor=({underlayColor.x:F2},{underlayColor.y:F2},{underlayColor.z:F2},{underlayColor.w:F2}), preserve={preserveExistingUnderlay}");
 
-			// Fallback: check fontSharedMaterial if fontMaterial has no underlay
-			if (!preserveExistingUnderlay)
-			{
-				Material sharedMat = sharedMatFallback;
-				if (sharedMat != null && sharedMat.HasProperty("_UnderlayColor"))
-				{
-					Vector4 sharedColor = sharedMat.GetVector("_UnderlayColor");
-					//Logging.Message($"[SWAP]   sharedMat._UnderlayColor=({sharedColor.x:F2},{sharedColor.y:F2},{sharedColor.z:F2},{sharedColor.w:F2})");
-					if (sharedColor.w > 0.001f)
-					{
-						underlayColor = sharedColor;
-						preserveExistingUnderlay = true;
-						if (sharedMat.HasProperty("_UnderlayOffset"))
-							underlayOffset = sharedMat.GetVector("_UnderlayOffset");
-						if (sharedMat.HasProperty("_UnderlaySoftness"))
-							underlaySoftness = sharedMat.GetFloat("_UnderlaySoftness");
-						if (sharedMat.HasProperty("_UnderlayDilate"))
-							underlayDilate = sharedMat.GetFloat("_UnderlayDilate");
-						//Logging.Message($"[SWAP]   FOUND underlay in sharedMat! preserve=true, color=({underlayColor.x:F2},{underlayColor.y:F2},{underlayColor.z:F2},{underlayColor.w:F2})");
-					}
-				}
-			}
-
 			// Force underlay for Text->TMP converted texts in intermission scenes
-			if (isConvertedFromText)
+			if (isConvertedFromText && !skipIntermissionUnderlay)
 			{
 				string currentScene = CommonFunctions.GetCurrentSceneName();
 				//Logging.Message($"[SWAP]   isConvertedFromText, scene={currentScene}");
@@ -460,7 +829,7 @@ foreach (HealthBar hb in healthBars)
 			if (Core.CustomMainFontTMP != null)
 			{
 				mainFont = Core.CustomMainFontTMP;
-				overlayMat = Core.GlobalFontTMPOverlayMat; // Keep same overlay material for now
+				overlayMat = Core.CustomMainFontTMPOverlayMat ?? Core.GlobalFontTMPOverlayMat;
 				normalMat = mainFont?.material;
 			}
 			if (Core.CustomMuseumFontTMP != null)
@@ -477,55 +846,37 @@ foreach (HealthBar hb in healthBars)
 			}
 
 			// Determine materials for each font type
-			Material museumOverlayMat = Core.GlobalFontTMPOverlayMat;
+			Material museumOverlayMat = Core.CustomMuseumFontTMPOverlayMat ?? Core.GlobalFontTMPOverlayMat;
 			Material museumNormalMat = museumFont?.material;
-			if (Core.CustomMuseumFontTMP != null && Core.CustomMuseumFontTMPOverlayMat != null)
-			{
-				museumOverlayMat = Core.CustomMuseumFontTMPOverlayMat;
-			}
 
-			Material terminalOverlayMat = Core.GlobalFontTMPOverlayMat;
+			Material terminalOverlayMat = Core.CustomTerminalFontTMPOverlayMat ?? Core.GlobalFontTMPOverlayMat;
 			Material terminalNormalMat = terminalFont?.material;
-			if (Core.CustomTerminalFontTMP != null && Core.CustomTerminalFontTMPOverlayMat != null)
-			{
-				terminalOverlayMat = Core.CustomTerminalFontTMPOverlayMat;
-			}
 
-			Material secretTerminalOverlayMat = Core.GlobalFontTMPOverlayMat;
+			Material secretTerminalOverlayMat = Core.CustomSecretTerminalFontTMPOverlayMat ?? Core.GlobalFontTMPOverlayMat;
 			Material secretTerminalNormalMat = secretTerminalFont?.material;
-			if (Core.CustomSecretTerminalFontTMP != null && Core.CustomSecretTerminalFontTMPOverlayMat != null)
-			{
-				secretTerminalOverlayMat = Core.CustomSecretTerminalFontTMPOverlayMat;
-			}
 
 			// Special handling for Text converted to TMP
 			if (isConvertedFromText && !string.IsNullOrEmpty(originalFontName))
 			{
-				Logging.Message($"Text converted to TMP: originalFontName='{originalFontName}', scene='{CommonFunctions.GetCurrentSceneName()}'");
-				
 				// If original font is museum font, use museum font (custom if available)
 				// Museum font can be "GFS Garaldus", "EBGaramond", or any font containing "Garaldus" or "Garamond"
 				if (originalFontName == "GFS Garaldus" || originalFontName.Contains("Garaldus") || originalFontName.Contains("EBGaramond") || originalFontName.Contains("Garamond"))
 				{
-					Logging.Message($"Detected museum font: originalFontName='{originalFontName}', museumFont={(museumFont != null ? museumFont.name : "NULL")}, custom={Core.CustomMuseumFontTMP != null}");
 					if (museumFont != null)
 					{
-						Logging.Message($"Applying museum font: {museumFont.name} with materials (overlay={museumOverlayMat?.name}, normal={museumNormalMat?.name})");
-						TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
+						ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
 					}
 					else
 					{
 						// Fallback to main font if museum font not available
-						Logging.Message($"Museum font is null, falling back to main font: {mainFont?.name}");
-						TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
+						ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
 					}
 					return;
 				}
 				// For other fonts (VCR OSD mono), use main font
 				else
 				{
-					Logging.Message($"Original font is not museum font, using main font: {mainFont?.name}");
-					TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
+					ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
 					return;
 				}
 			}
@@ -540,15 +891,13 @@ foreach (HealthBar hb in healthBars)
 					if (fontNameLower.Contains("tahoma") || fontNameLower.Contains("fs-tahoma-8px sdf"))
 					{
 						// Apply terminal font
-						Logging.Message($"Detected Tahoma font: '{currentFontName}', applying terminal font: {terminalFont?.name}");
                         ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, terminalFont, terminalOverlayMat, terminalNormalMat);
 						return;
 					}
 					else if (fontNameLower.Contains("bittypix monospace ") && fontNameLower.Contains("bittypix"))
 					{
 						// Apply secret terminal font
-						Logging.Message($"Detected Bittypix Monospace font: '{currentFontName}', applying secret terminal font: {secretTerminalFont?.name}");
-						TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, secretTerminalFont, secretTerminalOverlayMat, secretTerminalNormalMat);
+						ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, secretTerminalFont, secretTerminalOverlayMat, secretTerminalNormalMat);
 						return;
 					}
 				}
@@ -571,10 +920,10 @@ foreach (HealthBar hb in healthBars)
 			switch (text2)
 			{
 			case "zh":
-				TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.CJKFontTMP, Core.CJKFontTMPOverlayMat, ((TMP_Asset)Core.CJKFontTMP).material);
+				ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.CJKFontTMP, Core.CJKFontTMPOverlayMat, ((TMP_Asset)Core.CJKFontTMP).material);
 				break;
 			case "ja":
-				TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.JaFontTMP, Core.jaFontTMPOverlayMat, ((TMP_Asset)Core.JaFontTMP).material);
+				ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.JaFontTMP, Core.jaFontTMPOverlayMat, ((TMP_Asset)Core.JaFontTMP).material);
 				break;
 			case "ar":
 			case "fa":
@@ -609,11 +958,11 @@ foreach (HealthBar hb in healthBars)
 				Core.GlobalFontTMP.fallbackFontAssetTable.Add(Core.ArabicFontTMP);
 				if (CommonFunctions.GetCurrentSceneName() == "CreditsMuseum2" && ((TMP_Text)__instance).font.name == "GFS Garaldus")
 				{
-					TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
+					ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
 				}
 				else
 				{
-					TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
+					ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
 				}
 				break;
 			}
@@ -622,16 +971,16 @@ foreach (HealthBar hb in healthBars)
 			case "yi":
 			case "la":
 			case "ro":
-				TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.HebrewFontTMP, Core.GlobalFontTMPOverlayMat, ((TMP_Asset)Core.GlobalFontTMP).material);
+				ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, Core.HebrewFontTMP, Core.GlobalFontTMPOverlayMat, ((TMP_Asset)Core.GlobalFontTMP).material);
 				break;
 			default:
 				if (CommonFunctions.GetCurrentSceneName() == "CreditsMuseum2" && ((TMP_Text)__instance).font.name == "GFS Garaldus")
 				{
-					TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
+					ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, museumFont, museumOverlayMat, museumNormalMat);
 				}
 				else
 				{
-					TMPFontUtils.ApplyUnderlayAndZTest(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
+					ApplyFont(__instance, underlayColor, underlayOffset, underlaySoftness, underlayDilate, preserveExistingUnderlay, isUnderlaid, isOverlay, editOverlayStatus, mainFont, overlayMat, normalMat);
 				}
 				break;
 			}
@@ -711,20 +1060,81 @@ public static void ClearFontSwapCache()
 			[HarmonyPostfix]
 			public static void Start_Postfix(HealthBar __instance)
 			{
-				if (__instance == null || !HudControllerPatch.isOverlaid)
-					return;
-				var hud = HudController.Instance;
-				if (hud == null)
+				if (__instance == null)
 					return;
 				
+				// Apply shadow/underlay to health text (hpText) if it's already TMP
 				if (__instance.hpText != null)
-					HudControllerPatch.ApplyOverlayZTest(__instance.hpText, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+				{
+					var hpTextUGUI = __instance.hpText as TextMeshProUGUI;
+					if (hpTextUGUI != null)
+					{
+						TMPFontUtils.ApplyUnderlayAndZTest(
+							hpTextUGUI,
+							new Vector4(0f, 0f, 0f, 0.75f),
+							new Vector4(1.5f, -1.5f, 0f, 0f),
+							0f, 0f,
+							false, true, false, false,
+							Core.GlobalFontTMP,
+							Core.GlobalFontTMPOverlayMat,
+							Core.GlobalFontTMP?.material
+						);
+					}
+					else
+					{
+						// hpText is UnityEngine.Text (legacy) - find the converted TMP sibling and apply shadow
+						var hpTextGameObject = __instance.hpText?.gameObject;
+						if (hpTextGameObject != null)
+						{
+							var legacyText = hpTextGameObject.GetComponent<Text>();
+							if (legacyText != null)
+							{
+								var convertedTMP = TextToTMPConverter.GetConvertedTMP(legacyText);
+								if (convertedTMP != null)
+								{
+									TMPFontUtils.ApplyUnderlayAndZTest(
+										convertedTMP,
+										new Vector4(0f, 0f, 0f, 0.75f),
+										new Vector4(1.5f, -1.5f, 0f, 0f),
+										0f, 0f,
+										false, true, false, false,
+										Core.GlobalFontTMP,
+										Core.GlobalFontTMPOverlayMat,
+										Core.GlobalFontTMP?.material
+									);
+								}
+							}
+						}
+					}
+				}
 				
 				// Find and patch HP Symbol ("+" sign) - child TMP_Text in hierarchy
 				var hpSymbol = __instance.transform.GetComponentsInChildren<TextMeshProUGUI>(true)
 					.FirstOrDefault(t => t != null && (t.name.IndexOf("HP Symbol", StringComparison.OrdinalIgnoreCase) >= 0 || t.name.IndexOf("Plus", StringComparison.OrdinalIgnoreCase) >= 0));
 				if (hpSymbol != null)
-					HudControllerPatch.ApplyOverlayZTest(hpSymbol, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+				{
+					TMPFontUtils.ApplyUnderlayAndZTest(
+						hpSymbol,
+						new Vector4(0f, 0f, 0f, 0.75f),
+						new Vector4(1.5f, -1.5f, 0f, 0f),
+						0f, 0f,
+						false, true, false, false,
+						Core.GlobalFontTMP,
+						Core.GlobalFontTMPOverlayMat,
+						Core.GlobalFontTMP?.material
+					);
+				}
+
+				var hud = HudController.Instance;
+				if (hud == null)
+					return;
+
+				HudControllerPatch.ApplyOverlayToAllHealthBarTexts(
+					__instance,
+					HudControllerPatch.isOverlaid,
+					hud.overlayTextMaterial,
+					hud.normalTextMaterial
+				);
 			}
 		}
 
@@ -734,11 +1144,17 @@ public static void ClearFontSwapCache()
 			[HarmonyPostfix]
 			public static void OnEnable_Postfix(Speedometer __instance)
 			{
-				if (__instance?.textMesh != null && HudControllerPatch.isOverlaid)
+				if (__instance?.textMesh != null)
 				{
 					var hud = HudController.Instance;
 					if (hud != null)
-						HudControllerPatch.ApplyOverlayZTest(__instance.textMesh, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+						HudControllerPatch.ApplyOverlayZTest(
+							__instance.textMesh,
+							HudControllerPatch.isOverlaid,
+							hud.overlayTextMaterial,
+							hud.normalTextMaterial,
+							forceManagedShadow: true
+						);
 				}
 				if (HudControllerPatch.isOverlaid && !__instance.gameObject.activeSelf)
 					__instance.gameObject.SetActive(true);
@@ -755,8 +1171,24 @@ public static void ClearFontSwapCache()
 				{
 					var hud = HudController.Instance;
 					if (hud != null)
-						HudControllerPatch.ApplyOverlayZTest(__instance.textMesh, true, hud.overlayTextMaterial, hud.normalTextMaterial);
+						HudControllerPatch.ApplyOverlayZTest(
+							__instance.textMesh,
+							true,
+							hud.overlayTextMaterial,
+							hud.normalTextMaterial,
+							forceManagedShadow: true
+						);
 				}
+			}
+		}
+
+		[HarmonyPatch(typeof(HudController), "Start")]
+		public static class HudControllerStartOverlayPatch
+		{
+			[HarmonyPostfix]
+			public static void Start_Postfix()
+			{
+				HudControllerPatch.ReapplyOverlayToAll(HudControllerPatch.isOverlaid);
 			}
 		}
 
@@ -766,10 +1198,8 @@ public static void ClearFontSwapCache()
 			[HarmonyPostfix]
 			public static void OnPrefChanged_Postfix(HudController __instance, string key, object value)
 			{
-				if (key == "hudType" && HudControllerPatch.isOverlaid)
-				{
-					HudControllerPatch.ReapplyOverlayToAll();
-				}
+				if (key == "hudType")
+					HudControllerPatch.ReapplyOverlayToAll(HudControllerPatch.isOverlaid);
 			}
 		}
 	}

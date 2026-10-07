@@ -1,49 +1,115 @@
 {
-  "github.copilot.chat.localeOverride": "en",
-  "[git-commit]": {
-    "editor.rulers": [50, 72],
-    "editor.wordWrap": "wordWrapColumn",
-    "editor.wordWrapColumn": 72
-  },
-  "scm.inputFontFamily": "monospace",
-  
-  // C# и .NET настройки
-  "csharp.suppressDotnetRestoreNotification": true,
-  "omnisharp.enableEditorConfigSupport": true,
-  "omnisharp.enableRoslynAnalyzers": true,
-  "omnisharp.enableAsyncCompletion": true,
-  "omnisharp.useModernNet": false,
-  
-  // Навигация по коду
-  "editor.gotoLocation.multipleDefinitions": "goto",
-  "editor.gotoLocation.multipleTypeDefinitions": "goto",
-  "editor.gotoLocation.multipleImplementations": "goto",
-  "editor.gotoLocation.multipleReferences": "goto",
-  "editor.gotoLocation.multipleDeclarations": "goto",
-  
-  // Подсветка ссылок
-  "editor.referenceInfos": "inline",
-  "editor.occurrencesHighlight": "multiFile",
-  "editor.selectionHighlight": true,
-  
-  // Декомпилятор
-  "csharp.decompilationService.enabled": true,
-  "csharp.decompilationService.fallbackToMetadata": true,
-  
-  // Дополнительные настройки для лучшего опыта разработки
-  "editor.quickSuggestions": {
-    "other": true,
-    "comments": false,
-    "strings": false
-  },
-  "editor.suggestOnTriggerCharacters": true,
-  "editor.parameterHints.enabled": true,
-  "editor.suggestSelection": "recentlyUsed",
-  
-  // Настройки для Unity/игровых проектов
-  "csharp.suppressHiddenDiagnostics": false,
-  "csharp.implementationsCodeLens.enabled": true,
-  "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": true,
-  "dotnet.codeLens.enableReferencesCodeLens": true,
-  "dotnet.codeLens.enableTestsCodeLens": true
+    // ============================================================
+    // GitHub Copilot
+    // ============================================================
+
+    "github.copilot.chat.localeOverride": "ru",
+
+
+    // ============================================================
+    // Git commit
+    // ============================================================
+
+    "[git-commit]": {
+        "editor.rulers": [50, 72],
+        "editor.wordWrap": "wordWrapColumn",
+        "editor.wordWrapColumn": 72
+    },
+
+    "scm.inputFontFamily": "monospace",
+
+
+    // ============================================================
+    // C# / .NET / OmniSharp
+    // ============================================================
+
+    // UltrakULL targets .NET Framework 4.7.2.
+    "omnisharp.useModernNet": false,
+
+    "omnisharp.enableEditorConfigSupport": true,
+    "omnisharp.enableRoslynAnalyzers": true,
+    "omnisharp.enableAsyncCompletion": true,
+
+    // Allows navigation into compiled Unity/BepInEx/ULTRAKILL DLLs.
+    "omnisharp.enableDecompilationSupport": true,
+
+    "csharp.suppressDotnetRestoreNotification": true,
+
+
+    // ============================================================
+    // Project analysis
+    // ============================================================
+
+    // Analyze the entire solution, not only currently opened files.
+    // Useful for refactoring and finding problems across UltrakULL.
+    "dotnet.backgroundAnalysis.analyzerDiagnosticsScope": "fullSolution",
+    "dotnet.backgroundAnalysis.compilerDiagnosticsScope": "fullSolution",
+
+    // Allow completion suggestions from namespaces that are not
+    // explicitly imported yet.
+    "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": true,
+
+    // Show references above methods/classes where supported.
+    "dotnet.codeLens.enableReferencesCodeLens": true,
+
+    // UltrakULL is not a test project.
+    "dotnet.codeLens.enableTestsCodeLens": false,
+
+
+    // ============================================================
+    // Code navigation
+    // ============================================================
+
+    "editor.gotoLocation.multipleDefinitions": "goto",
+    "editor.gotoLocation.multipleTypeDefinitions": "goto",
+    "editor.gotoLocation.multipleImplementations": "goto",
+    "editor.gotoLocation.multipleReferences": "goto",
+    "editor.gotoLocation.multipleDeclarations": "goto",
+
+    "editor.referenceInfos": true,
+    "editor.occurrencesHighlight": "singleFile",
+    "editor.selectionHighlight": true,
+
+
+    // ============================================================
+    // IntelliSense
+    // ============================================================
+
+    "editor.quickSuggestions": {
+        "other": true,
+        "comments": false,
+        "strings": false
+    },
+
+    "editor.suggestOnTriggerCharacters": true,
+    "editor.parameterHints.enabled": true,
+    "editor.suggestSelection": "recentlyUsed",
+
+
+    // ============================================================
+    // Files / Search
+    // ============================================================
+
+    // Build artifacts and Visual Studio metadata are not useful
+    // during normal code navigation/search.
+    "files.exclude": {
+        "**/bin": true,
+        "**/obj": true,
+        "**/.vs": true
+    },
+
+    "search.exclude": {
+        "**/bin": true,
+        "**/obj": true,
+        "**/.vs": true
+    },
+
+
+    // ============================================================
+    // Formatting
+    // ============================================================
+
+    // Do not reformat entire files automatically on save.
+    // Refactoring should remain controlled.
+    "editor.formatOnSave": false
 }
